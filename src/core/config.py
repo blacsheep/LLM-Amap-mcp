@@ -1,0 +1,79 @@
+"""
+配置管理模块
+使用pydantic-settings管理环境变量和应用配置
+"""
+
+import os
+from typing import List, Optional
+from pydantic import Field, validator
+from pydantic_settings import BaseSettings
+
+
+class Settings(BaseSettings):
+    """应用配置类"""
+    
+    # Claude API配置
+    anthropic_api_key: str = Field(..., env="ANTHROPIC_API_KEY")
+    claude_model: str = Field(default="claude-3-5-sonnet-20241022", env="CLAUDE_MODEL") 
+    claude_max_tokens: int = Field(default=1000, env="CLAUDE_MAX_TOKENS")
+    
+    # 高德地图API配置
+    amap_maps_api_key: str = Field(..., env="AMAP_MAPS_API_KEY")
+    
+    # MCP服务器配置
+    mcp_server_timeout: int = Field(default=30, env="MCP_SERVER_TIMEOUT")
+    mcp_retry_count: int = Field(default=3, env="MCP_RETRY_COUNT") 
+    mcp_retry_delay: float = Field(default=1.0, env="MCP_RETRY_DELAY")
+    
+    # 高德MCP服务器配置
+    amap_server_command: str = Field(default="npx", env="AMAP_SERVER_COMMAND")
+    amap_server_args: List[str] = Field(
+        default_factory=lambda: ["-y", "@amap/amap-maps-mcp-server"],
+        env="AMAP_SERVER_ARGS"
+    )
+    
+    # 日志配置
+    log_level: str = Field(default="INFO", env="LOG_LEVEL")
+    log_file: str = Field(default="logs/app.log", env="LOG_FILE")
+    
+    # API服务配置
+    api_host: str = Field(default="127.0.0.1", env="API_HOST")
+    api_port: int = Field(default=8000, env="API_PORT")
+    api_debug: bool = Field(default=True, env="API_DEBUG")
+    
+    @validator("amap_server_args", pre=True)
+    def parse_amap_server_args(cls, v):
+        """解析AMAP_SERVER_ARGS环境变量"""
+        if isinstance(v, str):
+            return [arg.strip() for arg in v.split(",")]
+        return v
+    
+    @validator("log_level")
+    def validate_log_level(cls, v):
+        """验证日志级别"""
+        valid_levels = ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
+        if v.upper() not in valid_levels:
+            raise ValueError(f"日志级别必须是 {valid_levels} 中的一个")
+        return v.upper()
+    
+    @validator("log_file")
+    def validate_log_file(cls, v):
+        """确保日志目录存在"""
+        log_dir = os.path.dirname(v)
+        if log_dir and not os.path.exists(log_dir):
+            os.makedirs(log_dir, exist_ok=True)
+        return v
+    
+    class Config:
+        env_file = ".env"
+        env_file_encoding = "utf-8"
+        case_sensitive = False
+
+
+# 全局配置实例
+settings = Settings()
+
+
+def get_settings() -> Settings:
+    """获取配置实例"""
+    return settings

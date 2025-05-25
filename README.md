@@ -355,7 +355,6 @@ curl -X POST "http://localhost:8000/api/v1/address/batch" \
 
 5. **conda环境问题**
    - 确保激活了正确的环境：`conda activate address-parser`
-   - Python版本太低：参考 [UPGRADE_ENVIRONMENT.md](UPGRADE_ENVIRONMENT.md) 升级到Python 3.11
    - 如果遇到依赖冲突，尝试混合安装：
      ```bash
      conda install fastapi uvicorn pydantic

@@ -14,7 +14,7 @@
 
 ## 📋 系统要求
 
-- Python 3.8+
+- Python 3.10+
 - Node.js 16+ (用于高德MCP服务器)
 - 高德地图API密钥
 - Claude API密钥
@@ -54,7 +54,7 @@ conda env create -f environment.yml
 conda activate address-parser
 
 # 方法2: 手动创建环境
-conda create -n address-parser python=3.9
+conda create -n address-parser python=3.11
 conda activate address-parser
 
 # 安装依赖
@@ -350,11 +350,12 @@ curl -X POST "http://localhost:8000/api/v1/address/batch" \
 
 4. **依赖包冲突**
    - 使用虚拟环境隔离依赖：`python -m venv address-parser-env`
-   - 或使用conda环境：`conda create -n address-parser python=3.9`
+   - 或使用conda环境：`conda create -n address-parser python=3.11`
    - 清理pip缓存：`pip cache purge`
 
 5. **conda环境问题**
    - 确保激活了正确的环境：`conda activate address-parser`
+   - Python版本太低：参考 [UPGRADE_ENVIRONMENT.md](UPGRADE_ENVIRONMENT.md) 升级到Python 3.11
    - 如果遇到依赖冲突，尝试混合安装：
      ```bash
      conda install fastapi uvicorn pydantic

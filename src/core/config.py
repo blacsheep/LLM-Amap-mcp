@@ -5,17 +5,30 @@
 
 import os
 from typing import List, Optional
-from pydantic import Field, validator
-from pydantic_settings import BaseSettings
+from pydantic import Field, field_validator, ConfigDict
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
     """应用配置类"""
     
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        case_sensitive=False,
+        env_parse_none_str="None"
+    )
+    
     # Claude API配置
     anthropic_api_key: str = Field(..., env="ANTHROPIC_API_KEY")
-    claude_model: str = Field(default="claude-3-5-sonnet-20241022", env="CLAUDE_MODEL") 
+    claude_model: str = Field(default="claude-3-7-sonnet-20250219", env="CLAUDE_MODEL")
     claude_max_tokens: int = Field(default=1000, env="CLAUDE_MAX_TOKENS")
+    
+    # 代理配置
+    proxy_enabled: bool = Field(default=False, env="PROXY_ENABLED")
+    http_proxy: Optional[str] = Field(default=None, env="HTTP_PROXY")
+    https_proxy: Optional[str] = Field(default=None, env="HTTPS_PROXY")
+    all_proxy: Optional[str] = Field(default=None, env="ALL_PROXY")
     
     # 高德地图API配置
     amap_maps_api_key: str = Field(..., env="AMAP_MAPS_API_KEY")
@@ -27,8 +40,8 @@ class Settings(BaseSettings):
     
     # 高德MCP服务器配置
     amap_server_command: str = Field(default="npx", env="AMAP_SERVER_COMMAND")
-    amap_server_args: List[str] = Field(
-        default_factory=lambda: ["-y", "@amap/amap-maps-mcp-server"],
+    amap_server_args: str = Field(
+        default="-y,@amap/amap-maps-mcp-server",
         env="AMAP_SERVER_ARGS"
     )
     
@@ -41,14 +54,12 @@ class Settings(BaseSettings):
     api_port: int = Field(default=8000, env="API_PORT")
     api_debug: bool = Field(default=True, env="API_DEBUG")
     
-    @validator("amap_server_args", pre=True)
-    def parse_amap_server_args(cls, v):
-        """解析AMAP_SERVER_ARGS环境变量"""
-        if isinstance(v, str):
-            return [arg.strip() for arg in v.split(",")]
-        return v
+    def get_amap_server_args_list(self) -> List[str]:
+        """获取解析后的amap_server_args列表"""
+        return [arg.strip() for arg in self.amap_server_args.split(",")]
     
-    @validator("log_level")
+    @field_validator("log_level")
+    @classmethod
     def validate_log_level(cls, v):
         """验证日志级别"""
         valid_levels = ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
@@ -56,18 +67,14 @@ class Settings(BaseSettings):
             raise ValueError(f"日志级别必须是 {valid_levels} 中的一个")
         return v.upper()
     
-    @validator("log_file")
+    @field_validator("log_file")
+    @classmethod
     def validate_log_file(cls, v):
         """确保日志目录存在"""
         log_dir = os.path.dirname(v)
         if log_dir and not os.path.exists(log_dir):
             os.makedirs(log_dir, exist_ok=True)
         return v
-    
-    class Config:
-        env_file = ".env"
-        env_file_encoding = "utf-8"
-        case_sensitive = False
 
 
 # 全局配置实例

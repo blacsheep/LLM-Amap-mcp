@@ -15,8 +15,8 @@ def check_requirements():
     print("🔍 检查系统要求...")
     
     # 检查Python版本
-    if sys.version_info < (3, 8):
-        print("❌ Python版本需要3.8或更高")
+    if sys.version_info < (3, 10):
+        print("❌ Python版本需要3.10或更高")
         return False
     
     print(f"✅ Python版本: {sys.version}")
@@ -42,12 +42,22 @@ def check_conda():
         result = subprocess.run(['conda', '--version'], capture_output=True, text=True)
         if result.returncode == 0:
             conda_env = os.environ.get('CONDA_DEFAULT_ENV')
-            if conda_env and conda_env != 'base':
-                print(f"✅ 检测到Conda环境: {conda_env}")
+            
+            # 检查是否在推荐的address-parser环境中
+            if conda_env == 'address-parser':
+                print(f"✅ 检测到正确的Conda环境: {conda_env}")
+                return True
+            elif conda_env and conda_env != 'base':
+                print(f"⚠️  检测到Conda环境: {conda_env}")
+                print("💡 建议切换到address-parser环境:")
+                print("   conda activate address-parser")
                 return True
             else:
-                print("💡 建议创建conda环境:")
-                print("   conda create -n address-parser python=3.9")
+                print("💡 建议创建并激活conda环境:")
+                print("   conda env create -f environment.yml")
+                print("   conda activate address-parser")
+                print("   或者手动创建:")
+                print("   conda create -n address-parser python=3.11")
                 print("   conda activate address-parser")
                 return False
     except FileNotFoundError:

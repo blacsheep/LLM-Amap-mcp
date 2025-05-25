@@ -4,7 +4,7 @@
 """
 
 import os
-from typing import List, Optional
+from typing import List, Optional, Literal
 from pydantic import Field, field_validator, ConfigDict
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -19,10 +19,20 @@ class Settings(BaseSettings):
         env_parse_none_str="None"
     )
     
+    # LLM提供商选择
+    llm_provider: Literal["claude", "openai"] = Field(default="claude", env="LLM_PROVIDER")
+    
     # Claude API配置
     anthropic_api_key: str = Field(..., env="ANTHROPIC_API_KEY")
     claude_model: str = Field(default="claude-3-7-sonnet-20250219", env="CLAUDE_MODEL")
     claude_max_tokens: int = Field(default=1000, env="CLAUDE_MAX_TOKENS")
+    
+    # OpenAI兼容API配置
+    openai_api_key: Optional[str] = Field(default=None, env="OPENAI_API_KEY")
+    openai_base_url: Optional[str] = Field(default=None, env="OPENAI_BASE_URL")
+    openai_model: str = Field(default="gpt-4", env="OPENAI_MODEL")
+    openai_max_tokens: int = Field(default=1000, env="OPENAI_MAX_TOKENS")
+    openai_temperature: float = Field(default=0.7, env="OPENAI_TEMPERATURE")
     
     # 代理配置
     proxy_enabled: bool = Field(default=False, env="PROXY_ENABLED")
@@ -57,6 +67,30 @@ class Settings(BaseSettings):
     def get_amap_server_args_list(self) -> List[str]:
         """获取解析后的amap_server_args列表"""
         return [arg.strip() for arg in self.amap_server_args.split(",")]
+    
+    @field_validator("llm_provider")
+    @classmethod
+    def validate_llm_provider(cls, v):
+        """验证LLM提供商配置"""
+        if v not in ["claude", "openai"]:
+            raise ValueError("LLM提供商必须是 'claude' 或 'openai'")
+        return v.lower()
+    
+    @field_validator("openai_api_key")
+    @classmethod
+    def validate_openai_api_key(cls, v, info):
+        """验证OpenAI API密钥（当使用OpenAI时必需）"""
+        if info.data.get("llm_provider") == "openai" and not v:
+            raise ValueError("使用OpenAI提供商时，OPENAI_API_KEY是必需的")
+        return v
+    
+    @field_validator("anthropic_api_key")
+    @classmethod
+    def validate_anthropic_api_key(cls, v, info):
+        """验证Anthropic API密钥（当使用Claude时必需）"""
+        if info.data.get("llm_provider") == "claude" and not v:
+            raise ValueError("使用Claude提供商时，ANTHROPIC_API_KEY是必需的")
+        return v
     
     @field_validator("log_level")
     @classmethod

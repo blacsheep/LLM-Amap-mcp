@@ -121,16 +121,38 @@ def setup_environment():
     
     needs_config = []
     
-    if 'your_anthropic_api_key_here' in content:
-        needs_config.append('ANTHROPIC_API_KEY')
-    
+    # 检查高德地图API密钥（必需）
     if 'your_amap_api_key_here' in content:
         needs_config.append('AMAP_MAPS_API_KEY')
     
+    # 检查LLM提供商配置
+    llm_provider = "claude"  # 默认值
+    for line in content.split('\n'):
+        if line.startswith('LLM_PROVIDER=') and not line.startswith('#'):
+            llm_provider = line.split('=', 1)[1].strip().lower()
+            break
+    
+    print(f"🔧 检测到LLM提供商: {llm_provider.upper()}")
+    
+    # 根据LLM提供商检查相应的API密钥
+    if llm_provider == "claude":
+        if 'your_anthropic_api_key_here' in content:
+            needs_config.append('ANTHROPIC_API_KEY')
+    elif llm_provider == "openai":
+        if 'your_openai_api_key_here' in content:
+            needs_config.append('OPENAI_API_KEY')
+    
     if needs_config:
         print(f"⚠️  请在.env文件中配置以下API密钥: {', '.join(needs_config)}")
-        print("   - ANTHROPIC_API_KEY: 从 https://console.anthropic.com/ 获取")
-        print("   - AMAP_MAPS_API_KEY: 从 https://lbs.amap.com/ 获取")
+        print("   API密钥获取地址:")
+        if 'ANTHROPIC_API_KEY' in needs_config:
+            print("   - ANTHROPIC_API_KEY: https://console.anthropic.com/")
+        if 'OPENAI_API_KEY' in needs_config:
+            print("   - OPENAI_API_KEY: https://platform.openai.com/")
+        if 'AMAP_MAPS_API_KEY' in needs_config:
+            print("   - AMAP_MAPS_API_KEY: https://lbs.amap.com/")
+        print(f"\n💡 当前使用 {llm_provider.upper()} 作为LLM提供商")
+        print("   可通过修改 .env 文件中的 LLM_PROVIDER 来切换 (claude/openai)")
         return False
     
     print("✅ 环境变量配置完成")

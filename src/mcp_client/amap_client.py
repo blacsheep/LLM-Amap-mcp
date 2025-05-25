@@ -50,10 +50,7 @@ class AmapMCPClient:
         try:
             self.logger.info("开始连接高德MCP服务器")
             
-            # 启动MCP服务器进程
-            await self._start_amap_server()
-            
-            # 建立MCP连接
+            # 建立MCP连接（这会自动启动服务器进程）
             await self._establish_mcp_connection()
             
             # 初始化会话
@@ -78,20 +75,18 @@ class AmapMCPClient:
         try:
             self.logger.info("开始断开MCP连接")
             
-            # 清理MCP会话
+            # 清理MCP会话和连接
             if self.session:
                 try:
                     await self.exit_stack.aclose()
                 except Exception as e:
                     self.logger.warning("清理MCP会话时出错", error=str(e))
             
-            # 停止服务器进程
-            await self._stop_amap_server()
-            
             # 重置状态
             self.session = None
             self.stdio = None
             self.write = None
+            self.server_process = None
             self.is_connected = False
             self._available_tools = None
             

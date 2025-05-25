@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 基础使用示例
-展示如何使用高德MCP客户端和Claude处理器进行地址解析
+展示如何使用高德MCP客户端和多种LLM处理器进行地址解析
 """
 
 import asyncio
@@ -12,7 +12,7 @@ from pathlib import Path
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
-from src.mcp_client import AmapMCPClient, ClaudeHandler
+from src.mcp_client import AmapMCPClient, create_llm_handler, get_current_provider
 from src.core.logger import setup_logger
 from src.core.config import get_settings
 
@@ -28,8 +28,10 @@ async def basic_address_parsing_example():
         async with AmapMCPClient() as amap_client:
             logger.info("MCP客户端连接成功")
             
-            # 创建Claude处理器
-            claude_handler = ClaudeHandler(amap_client)
+            # 使用工厂模式创建LLM处理器
+            llm_handler = create_llm_handler(amap_client)
+            current_provider = get_current_provider()
+            logger.info(f"使用{current_provider.upper()}处理器")
             
             # 示例查询列表
             queries = [
@@ -47,7 +49,7 @@ async def basic_address_parsing_example():
                 
                 try:
                     # 处理查询
-                    result = await claude_handler.process_query(query)
+                    result = await llm_handler.process_query(query)
                     
                     # 显示结果
                     if result["success"]:
@@ -142,7 +144,8 @@ async def interactive_mode():
     try:
         logger.info("开始交互模式")
         
-        print("\n🤖 高德地址解析服务 - 交互模式")
+        current_provider = get_current_provider()
+        print(f"\n🤖 高德地址解析服务 - 交互模式 (使用 {current_provider.upper()})")
         print("="*60)
         print("输入地址或坐标进行解析，输入 'quit' 退出")
         print("示例:")
@@ -151,9 +154,9 @@ async def interactive_mode():
         print("  - 上海市浦东新区陆家嘴")
         print("="*60)
         
-        # 创建MCP客户端和Claude处理器
+        # 创建MCP客户端和LLM处理器
         async with AmapMCPClient() as amap_client:
-            claude_handler = ClaudeHandler(amap_client)
+            llm_handler = create_llm_handler(amap_client)
             
             while True:
                 try:
@@ -170,7 +173,7 @@ async def interactive_mode():
                     print("⏳ 处理中...")
                     
                     # 处理查询
-                    result = await claude_handler.process_query(query)
+                    result = await llm_handler.process_query(query)
                     
                     # 显示结果
                     if result["success"]:
@@ -192,22 +195,61 @@ async def interactive_mode():
         print(f"❌ 交互模式失败: {e}")
 
 
+def check_configuration():
+    """检查配置是否正确"""
+    try:
+        settings = get_settings()
+        current_provider = get_current_provider()
+        
+        print(f"🔧 当前LLM提供商: {current_provider.upper()}")
+        
+        # 检查高德地图API密钥
+        if not settings.amap_maps_api_key or settings.amap_maps_api_key == "your_amap_api_key_here":
+            print("❌ 请设置 AMAP_MAPS_API_KEY 环境变量")
+            print("   从 https://lbs.amap.com/ 获取API密钥")
+            return False
+        
+        # 根据当前提供商检查相应的API密钥
+        if current_provider == "claude":
+            if not settings.anthropic_api_key or settings.anthropic_api_key == "your_anthropic_api_key_here":
+                print("❌ 请设置 ANTHROPIC_API_KEY 环境变量")
+                print("   从 https://console.anthropic.com/ 获取API密钥")
+                return False
+            print(f"✅ Claude配置: 模型 {settings.claude_model}")
+            
+        elif current_provider == "openai":
+            if not settings.openai_api_key or settings.openai_api_key == "your_openai_api_key_here":
+                print("❌ 请设置 OPENAI_API_KEY 环境变量")
+                print("   从 https://platform.openai.com/ 获取API密钥")
+                return False
+            
+            print(f"✅ OpenAI配置: 模型 {settings.openai_model}")
+            if settings.openai_base_url:
+                print(f"   基础URL: {settings.openai_base_url}")
+            else:
+                print("   使用官方OpenAI API")
+        
+        print("✅ 配置检查通过")
+        return True
+        
+    except Exception as e:
+        print(f"❌ 配置检查失败: {e}")
+        print("💡 请检查 .env 文件是否存在并正确配置")
+        return False
+
+
 async def main():
     """主函数"""
     print("🚀 高德地址解析服务示例")
     print("="*60)
     
     # 检查配置
-    settings = get_settings()
-    if not settings.anthropic_api_key:
-        print("❌ 请设置 ANTHROPIC_API_KEY 环境变量")
+    if not check_configuration():
+        print("\n💡 配置帮助:")
+        print("1. 复制 .env.example 为 .env")
+        print("2. 编辑 .env 文件，填入你的API密钥")
+        print("3. 可通过 LLM_PROVIDER 环境变量选择 claude 或 openai")
         return
-    
-    if not settings.amap_maps_api_key:
-        print("❌ 请设置 AMAP_MAPS_API_KEY 环境变量")
-        return
-    
-    print("✅ 配置检查通过")
     
     # 选择示例模式
     print("\n请选择示例模式:")

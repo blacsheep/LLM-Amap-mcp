@@ -3,26 +3,22 @@
 """
 
 import time
-from typing import Dict, Any
+import asyncio
+from typing import List, Optional, Dict, Any
+
 from fastapi import APIRouter, HTTPException, Depends, BackgroundTasks
 from fastapi.responses import JSONResponse
 
+from src.core.config import get_settings
+from src.core.logger import setup_logger
+from src.core.exceptions import AddressParserBaseException
+from src.mcp_client import AmapMCPClient, create_llm_handler, get_current_provider
 from ..schemas.models import (
-    AddressQuery, 
-    AddressResponse, 
-    HealthResponse, 
-    ToolsResponse,
-    ErrorResponse
+    AddressQuery,
+    AddressResponse,
+    HealthResponse,
+    ToolsResponse
 )
-from ...src.mcp_client import AmapMCPClient, ClaudeHandler
-from ...src.core.logger import get_logger
-from ...src.core.exceptions import (
-    MCPConnectionError,
-    ClaudeAPIError,
-    ValidationError,
-    TimeoutError
-)
-from ...src.utils.helpers import generate_request_id
 
 
 # 创建路由器
@@ -30,11 +26,22 @@ router = APIRouter(prefix="/api/v1", tags=["地址解析"])
 
 # 全局变量存储客户端实例
 _amap_client: AmapMCPClient = None
-_claude_handler: ClaudeHandler = None
+_llm_handler = None
 _service_start_time = time.time()
 
 # 日志记录器
-logger = get_logger("api_routes")
+logger = setup_logger("api_routes")
+
+
+def generate_request_id() -> str:
+    """生成请求ID"""
+    import time
+    import random
+    import string
+    
+    timestamp = str(int(time.time() * 1000))
+    random_str = ''.join(random.choices(string.ascii_lowercase + string.digits, k=8))
+    return f"{timestamp}_{random_str}"
 
 
 async def get_amap_client() -> AmapMCPClient:
@@ -55,34 +62,35 @@ async def get_amap_client() -> AmapMCPClient:
     return _amap_client
 
 
-async def get_claude_handler() -> ClaudeHandler:
-    """获取Claude处理器实例"""
-    global _claude_handler
+async def get_llm_handler():
+    """获取LLM处理器实例"""
+    global _llm_handler
     
-    if _claude_handler is None:
+    if _llm_handler is None:
         amap_client = await get_amap_client()
-        _claude_handler = ClaudeHandler(amap_client)
-        logger.info("Claude处理器已初始化")
+        _llm_handler = create_llm_handler(amap_client)
+        current_provider = get_current_provider()
+        logger.info("LLM处理器已初始化", provider=current_provider)
     
-    return _claude_handler
+    return _llm_handler
 
 
 @router.post(
     "/address/parse",
     response_model=AddressResponse,
     summary="地址解析",
-    description="使用Claude AI和高德地图API解析地址信息"
+    description="使用AI和高德地图API解析地址信息"
 )
 async def parse_address(
     query: AddressQuery,
-    claude_handler: ClaudeHandler = Depends(get_claude_handler)
+    llm_handler = Depends(get_llm_handler)
 ) -> AddressResponse:
     """
     地址解析接口
     
     Args:
         query: 地址查询请求
-        claude_handler: Claude处理器实例
+        llm_handler: LLM处理器实例
         
     Returns:
         地址解析结果
@@ -93,10 +101,11 @@ async def parse_address(
     try:
         logger.info("收到地址解析请求", 
                    request_id=request_id,
-                   address=query.address)
+                   address=query.address,
+                   provider=get_current_provider())
         
         # 处理查询
-        result = await claude_handler.process_query(
+        result = await llm_handler.process_query(
             query=query.address,
             context=query.context,
             system_prompt=query.system_prompt
@@ -119,53 +128,55 @@ async def parse_address(
         logger.info("地址解析完成", 
                    request_id=request_id,
                    success=result["success"],
-                   processing_time=processing_time)
+                   processing_time=processing_time,
+                   provider=get_current_provider())
         
         return response
         
-    except ValidationError as e:
-        logger.warning("请求验证失败", request_id=request_id, error=str(e))
+    except AddressParserBaseException as e:
+        logger.warning("业务异常", request_id=request_id, error=str(e))
         raise HTTPException(
             status_code=400,
             detail={
-                "error_code": "VALIDATION_ERROR",
-                "error_message": str(e),
-                "request_id": request_id
-            }
-        )
-    
-    except (MCPConnectionError, ClaudeAPIError) as e:
-        logger.error("服务错误", request_id=request_id, error=str(e))
-        raise HTTPException(
-            status_code=503,
-            detail={
-                "error_code": "SERVICE_ERROR",
-                "error_message": "服务暂时不可用，请稍后重试",
-                "request_id": request_id
-            }
-        )
-    
-    except TimeoutError as e:
-        logger.error("请求超时", request_id=request_id, error=str(e))
-        raise HTTPException(
-            status_code=408,
-            detail={
-                "error_code": "TIMEOUT_ERROR",
-                "error_message": "请求处理超时",
+                "error_code": e.error_code,
+                "error_message": e.message,
                 "request_id": request_id
             }
         )
     
     except Exception as e:
-        logger.error("未知错误", request_id=request_id, error=str(e))
-        raise HTTPException(
-            status_code=500,
-            detail={
-                "error_code": "INTERNAL_ERROR",
-                "error_message": "内部服务器错误",
-                "request_id": request_id
-            }
-        )
+        # 检查是否是连接相关错误
+        error_str = str(e).lower()
+        if any(keyword in error_str for keyword in ['connection', 'timeout', 'network']):
+            logger.error("连接错误", request_id=request_id, error=str(e))
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "error_code": "SERVICE_ERROR",
+                    "error_message": "服务暂时不可用，请稍后重试",
+                    "request_id": request_id
+                }
+            )
+        elif 'timeout' in error_str:
+            logger.error("请求超时", request_id=request_id, error=str(e))
+            raise HTTPException(
+                status_code=408,
+                detail={
+                    "error_code": "TIMEOUT_ERROR",
+                    "error_message": "请求处理超时",
+                    "request_id": request_id
+                }
+            )
+        else:
+            logger.error("未知错误", request_id=request_id, error=str(e))
+            raise HTTPException(
+                status_code=500,
+                detail={
+                    "error_code": "INTERNAL_ERROR",
+                    "error_message": "内部服务器错误",
+                    "request_id": request_id
+                }
+            )
 
 
 @router.get(
@@ -187,33 +198,55 @@ async def health_check() -> HealthResponse:
         tools_count = 0
         
         try:
-            amap_client = await get_amap_client()
-            mcp_connected = await amap_client.health_check()
-            if mcp_connected:
-                tools = await amap_client.list_available_tools()
-                tools_count = len(tools)
+            # 只有在全局客户端已初始化时才检查MCP
+            global _amap_client
+            if _amap_client is not None:
+                mcp_connected = await _amap_client.health_check()
+                if mcp_connected:
+                    tools = await _amap_client.list_available_tools()
+                    tools_count = len(tools)
+            else:
+                # 如果客户端未初始化，尝试快速测试连接
+                test_client = AmapMCPClient()
+                await test_client.connect()
+                mcp_connected = await test_client.health_check()
+                if mcp_connected:
+                    tools = await test_client.list_available_tools()
+                    tools_count = len(tools)
+                await test_client.disconnect()
         except Exception as e:
             logger.warning("MCP健康检查失败", error=str(e))
         
-        # 检查Claude API
-        claude_available = False
+        # 检查LLM API
+        llm_available = False
+        current_provider = get_current_provider()
         try:
-            claude_handler = await get_claude_handler()
-            # 简单测试Claude可用性
-            claude_available = True
+            # 只有在全局处理器已初始化时才检查LLM
+            global _llm_handler
+            if _llm_handler is not None:
+                llm_available = True
+            else:
+                # 简单检查配置是否正确
+                settings = get_settings()
+                if current_provider == "claude" and settings.anthropic_api_key:
+                    llm_available = True
+                elif current_provider == "openai" and settings.openai_api_key:
+                    llm_available = True
         except Exception as e:
-            logger.warning("Claude健康检查失败", error=str(e))
+            logger.warning("LLM健康检查失败", provider=current_provider, error=str(e))
         
         # 计算运行时间
         uptime = time.time() - _service_start_time
         
         # 确定整体状态
-        status = "healthy" if (mcp_connected and claude_available) else "unhealthy"
+        status = "healthy" if (mcp_connected and llm_available) else "partial"
+        if not mcp_connected and not llm_available:
+            status = "unhealthy"
         
         return HealthResponse(
             status=status,
             mcp_connected=mcp_connected,
-            claude_available=claude_available,
+            claude_available=llm_available,  # 保持向后兼容的字段名
             tools_count=tools_count,
             uptime=uptime
         )
@@ -232,27 +265,18 @@ async def health_check() -> HealthResponse:
     "/tools",
     response_model=ToolsResponse,
     summary="获取可用工具",
-    description="获取高德地图MCP服务器提供的可用工具列表"
+    description="获取当前可用的MCP工具列表"
 )
-async def get_tools(
-    amap_client: AmapMCPClient = Depends(get_amap_client)
-) -> ToolsResponse:
+async def get_tools() -> ToolsResponse:
     """
-    获取可用工具列表
+    获取可用工具接口
     
-    Args:
-        amap_client: 高德MCP客户端实例
-        
     Returns:
         工具列表
     """
     try:
-        logger.info("获取工具列表请求")
-        
-        # 获取工具列表
-        tools = await amap_client.list_available_tools()
-        
-        logger.info("工具列表获取成功", tools_count=len(tools))
+        llm_handler = await get_llm_handler()
+        tools = await llm_handler.get_available_tools()
         
         return ToolsResponse(
             success=True,
@@ -260,23 +284,14 @@ async def get_tools(
             count=len(tools)
         )
         
-    except MCPConnectionError as e:
-        logger.error("MCP连接错误", error=str(e))
-        raise HTTPException(
-            status_code=503,
-            detail={
-                "error_code": "MCP_CONNECTION_ERROR",
-                "error_message": "无法连接到高德地图服务"
-            }
-        )
-    
     except Exception as e:
         logger.error("获取工具列表失败", error=str(e))
         raise HTTPException(
             status_code=500,
             detail={
                 "error_code": "INTERNAL_ERROR",
-                "error_message": "获取工具列表失败"
+                "error_message": "获取工具列表失败",
+                "error": str(e)
             }
         )
 
@@ -289,7 +304,7 @@ async def get_tools(
 async def batch_parse_addresses(
     queries: list[AddressQuery],
     background_tasks: BackgroundTasks,
-    claude_handler: ClaudeHandler = Depends(get_claude_handler)
+    llm_handler = Depends(get_llm_handler)
 ) -> Dict[str, Any]:
     """
     批量地址解析接口
@@ -297,7 +312,7 @@ async def batch_parse_addresses(
     Args:
         queries: 地址查询请求列表
         background_tasks: 后台任务
-        claude_handler: Claude处理器实例
+        llm_handler: LLM处理器实例
         
     Returns:
         批量处理结果
@@ -312,48 +327,77 @@ async def batch_parse_addresses(
         )
     
     batch_id = generate_request_id()
-    logger.info("收到批量地址解析请求", 
-               batch_id=batch_id,
-               count=len(queries))
     
-    results = []
-    
-    for i, query in enumerate(queries):
-        try:
-            result = await claude_handler.process_query(
-                query=query.address,
-                context=query.context,
-                system_prompt=query.system_prompt
-            )
-            
-            results.append({
-                "index": i,
-                "success": result["success"],
-                "data": result.get("data"),
-                "response": result.get("final_answer", ""),
-                "error": result.get("error")
-            })
-            
-        except Exception as e:
-            logger.error("批量处理项失败", 
-                        batch_id=batch_id,
-                        index=i,
-                        error=str(e))
-            results.append({
-                "index": i,
-                "success": False,
-                "data": None,
-                "response": "",
+    try:
+        logger.info("收到批量地址解析请求", 
+                   batch_id=batch_id,
+                   count=len(queries),
+                   provider=get_current_provider())
+        
+        results = []
+        
+        for i, query in enumerate(queries):
+            try:
+                result = await llm_handler.process_query(
+                    query=query.address,
+                    context=query.context,
+                    system_prompt=query.system_prompt
+                )
+                
+                results.append({
+                    "index": i,
+                    "address": query.address,
+                    "success": result["success"],
+                    "data": result.get("data"),
+                    "response": result.get("final_answer", ""),
+                    "error": result.get("error")
+                })
+                
+            except Exception as e:
+                logger.error("批量处理中单个请求失败", 
+                           batch_id=batch_id,
+                           index=i,
+                           address=query.address,
+                           error=str(e))
+                
+                results.append({
+                    "index": i,
+                    "address": query.address,
+                    "success": False,
+                    "data": None,
+                    "response": "",
+                    "error": str(e)
+                })
+        
+        # 统计结果
+        success_count = sum(1 for r in results if r["success"])
+        
+        logger.info("批量地址解析完成", 
+                   batch_id=batch_id,
+                   total=len(queries),
+                   success=success_count,
+                   failed=len(queries) - success_count,
+                   provider=get_current_provider())
+        
+        return {
+            "batch_id": batch_id,
+            "total": len(queries),
+            "success_count": success_count,
+            "failed_count": len(queries) - success_count,
+            "results": results
+        }
+        
+    except Exception as e:
+        logger.error("批量地址解析失败", batch_id=batch_id, error=str(e))
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error_code": "BATCH_PROCESSING_ERROR",
+                "error_message": "批量处理失败",
+                "batch_id": batch_id,
                 "error": str(e)
-            })
-    
-    return {
-        "batch_id": batch_id,
-        "total": len(queries),
-        "results": results,
-        "success_count": sum(1 for r in results if r["success"]),
-        "error_count": sum(1 for r in results if not r["success"])
-    }
+            }
+        )
 
 
 # 应用启动时的初始化
@@ -361,17 +405,18 @@ async def startup_event():
     """应用启动事件"""
     global _service_start_time
     _service_start_time = time.time()
-    logger.info("地址解析API服务启动")
+    current_provider = get_current_provider()
+    logger.info("地址解析API服务启动", provider=current_provider)
 
 
 # 应用关闭时的清理
 async def shutdown_event():
     """应用关闭事件"""
-    global _amap_client, _claude_handler
+    global _amap_client, _llm_handler
     
     if _amap_client:
         await _amap_client.disconnect()
         _amap_client = None
     
-    _claude_handler = None
+    _llm_handler = None
     logger.info("地址解析API服务关闭")

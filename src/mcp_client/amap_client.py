@@ -179,7 +179,7 @@ class AmapMCPClient:
             env["AMAP_MAPS_API_KEY"] = self.settings.amap_maps_api_key
             
             # 构建命令
-            cmd = [self.settings.amap_server_command] + self.settings.amap_server_args
+            cmd = [self.settings.amap_server_command] + self.settings.get_amap_server_args_list()
             
             self.logger.info("启动高德MCP服务器", command=cmd)
             
@@ -249,7 +249,7 @@ class AmapMCPClient:
             # 配置服务器参数
             server_params = StdioServerParameters(
                 command=self.settings.amap_server_command,
-                args=self.settings.amap_server_args,
+                args=self.settings.get_amap_server_args_list(),
                 env={"AMAP_MAPS_API_KEY": self.settings.amap_maps_api_key}
             )
             

@@ -3,6 +3,7 @@ Claude API处理器实现
 """
 
 import json
+import os
 from typing import Dict, Any, List, Optional, Union
 from anthropic import AsyncAnthropic
 
@@ -21,13 +22,66 @@ class ClaudeHandler:
         self.logger = get_logger("claude_handler")
         self.amap_client = amap_client
         
+        # 设置代理环境变量（如果启用）
+        self._setup_proxies()
+        
         # 初始化Claude客户端
         self.anthropic = AsyncAnthropic(
-            api_key=self.settings.anthropic_api_key
+            api_key=self.settings.anthropic_api_key,
+            # 添加额外的配置参数
+            timeout=60.0,  # 设置超时时间
+            max_retries=2,   # 设置最大重试次数
+            # 添加代理配置（如果启用）
+            http_client=self._get_http_client() if self.settings.proxy_enabled else None
         )
         
         # 工具缓存
         self._claude_tools: Optional[List[Dict[str, Any]]] = None
+    
+    def _setup_proxies(self):
+        """设置代理环境变量（如果启用）"""
+        if self.settings.proxy_enabled:
+            self.logger.info("代理配置已启用，正在设置环境变量")
+            
+            # 设置代理环境变量
+            if self.settings.http_proxy:
+                os.environ["http_proxy"] = self.settings.http_proxy
+                self.logger.debug(f"已设置HTTP代理: {self.settings.http_proxy}")
+                
+            if self.settings.https_proxy:
+                os.environ["https_proxy"] = self.settings.https_proxy
+                self.logger.debug(f"已设置HTTPS代理: {self.settings.https_proxy}")
+                
+            if self.settings.all_proxy:
+                os.environ["ALL_PROXY"] = self.settings.all_proxy
+                self.logger.debug(f"已设置ALL_PROXY代理: {self.settings.all_proxy}")
+        else:
+            self.logger.debug("代理配置未启用")
+    
+    def _get_http_client(self):
+        """获取配置了代理的HTTP客户端"""
+        try:
+            import httpx
+            
+            # 构建单一代理URL，优先使用HTTPS代理，其次HTTP代理，最后是ALL_PROXY
+            proxy = None
+            if self.settings.https_proxy:
+                proxy = self.settings.https_proxy
+            elif self.settings.http_proxy:
+                proxy = self.settings.http_proxy
+            elif self.settings.all_proxy:
+                proxy = self.settings.all_proxy
+            
+            if proxy:
+                self.logger.info(f"为Anthropic客户端创建代理配置: {proxy}")
+                # 创建并返回带有代理配置的httpx客户端实例
+                client = httpx.AsyncClient(proxy=proxy)
+                return client
+            else:
+                return None
+        except ImportError:
+            self.logger.warning("未安装httpx库，无法创建自定义HTTP客户端")
+            return None
     
     @retry_async(max_retries=2, delay=1.0)
     async def process_query(
@@ -64,13 +118,26 @@ class ClaudeHandler:
             system = system_prompt or self._build_system_prompt()
             
             # 调用Claude API
-            response = await self.anthropic.messages.create(
-                model=self.settings.claude_model,
-                max_tokens=self.settings.claude_max_tokens,
-                messages=messages,
-                tools=tools,
-                system=system
-            )
+            try:
+                response = await self.anthropic.messages.create(
+                    model=self.settings.claude_model,
+                    max_tokens=self.settings.claude_max_tokens,
+                    messages=messages,
+                    tools=tools if tools else None,  # 确保工具参数正确
+                    system=system,
+                    # 添加额外的API参数
+                    temperature=0.7,  # 控制随机性
+                    # anthropic_version="2023-06-01"  # 指定API版本（可选）
+                )
+            except Exception as api_error:
+                self.logger.error(
+                    "Claude API调用失败", 
+                    request_id=request_id,
+                    model=self.settings.claude_model,
+                    api_error=str(api_error),
+                    api_key_prefix=self.settings.anthropic_api_key[:10] + "..." if self.settings.anthropic_api_key else "None"
+                )
+                raise ClaudeAPIError(f"Claude API调用失败: {api_error}")
             
             # 处理响应和工具调用
             result = await self._handle_response(response, messages, tools, request_id)
@@ -308,3 +375,46 @@ class ClaudeHandler:
         """清除工具缓存"""
         self._claude_tools = None
         self.logger.info("工具缓存已清除")
+    
+    async def test_api_connection(self) -> Dict[str, Any]:
+        """
+        测试Claude API连接
+        
+        Returns:
+            测试结果
+        """
+        test_result = {
+            "success": False,
+            "error": None,
+            "model": self.settings.claude_model,
+            "api_key_configured": bool(self.settings.anthropic_api_key)
+        }
+        
+        try:
+            self.logger.info("开始测试Claude API连接")
+            
+            # 简单的测试消息
+            simple_message = {
+                "role": "user",
+                "content": "Hello, can you respond with 'API connection successful'?"
+            }
+            
+            response = await self.anthropic.messages.create(
+                model=self.settings.claude_model,
+                max_tokens=50,
+                messages=[simple_message],
+                temperature=0.1
+            )
+            
+            if response and response.content:
+                test_result["success"] = True
+                test_result["response"] = response.content[0].text if response.content else ""
+                self.logger.info("Claude API连接测试成功")
+            else:
+                test_result["error"] = "收到空响应"
+                
+        except Exception as e:
+            test_result["error"] = str(e)
+            self.logger.error("Claude API连接测试失败", error=str(e))
+        
+        return test_result

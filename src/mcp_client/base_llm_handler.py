@@ -3,11 +3,13 @@ LLM处理器抽象基类
 定义统一的LLM处理器接口，支持多种LLM提供商
 """
 
+import json
 from abc import ABC, abstractmethod
 from typing import Dict, Any, List, Optional
 
 from ..core.config import get_settings
 from ..core.logger import get_logger
+from ..core.prompt_manager import get_system_prompt
 from .amap_client import AmapMCPClient
 
 
@@ -88,22 +90,7 @@ class BaseLLMHandler(ABC):
     
     def _build_system_prompt(self) -> str:
         """构建系统提示词（通用实现）"""
-        return """你是一个专业的地址解析助手，可以帮助用户解析地址信息、进行地理编码和逆地理编码。
-
-你有以下能力：
-- 将地址转换为经纬度坐标（地理编码）
-- 将经纬度坐标转换为详细地址（逆地理编码）
-- 搜索兴趣点（POI）信息
-- 提供准确的地理位置信息
-
-使用指南：
-- 当用户提供地址时，使用地理编码获取坐标和详细信息
-- 当用户提供坐标时，使用逆地理编码获取详细地址信息
-- 对于模糊地址，尝试使用POI搜索找到最匹配的结果
-- 始终提供清晰、准确的中文回复
-- 如果遇到错误，请友好地解释问题并建议解决方案
-
-请根据用户的具体需求选择合适的工具，并提供有用的地理信息。"""
+        return get_system_prompt()
     
     def _format_context(self, context: Dict[str, Any]) -> str:
         """格式化上下文信息（通用实现）"""
@@ -156,8 +143,24 @@ class BaseLLMHandler(ABC):
                 tool_arguments
             )
             
-            # 处理结果，确保可以JSON序列化
+            # 对结果进行更严格的处理
+            # 1. 先尝试将结果转换为可序列化的格式
             serializable_result = self._make_serializable(result)
+            
+            # 2. 如果结果是列表且只包含一个字符串元素（通常是JSON字符串）
+            if isinstance(serializable_result, list) and len(serializable_result) == 1 and isinstance(serializable_result[0], str):
+                try:
+                    # 尝试解析JSON字符串
+                    parsed_json = json.loads(serializable_result[0])
+                    serializable_result = parsed_json
+                    self.logger.info("成功解析工具调用返回的JSON字符串", 
+                                    request_id=request_id, 
+                                    tool_name=tool_name)
+                except json.JSONDecodeError as e:
+                    self.logger.warning("无法解析工具调用返回的JSON字符串", 
+                                      request_id=request_id, 
+                                      tool_name=tool_name,
+                                      error=str(e))
             
             tool_result["success"] = True
             tool_result["result"] = serializable_result
@@ -190,9 +193,29 @@ class BaseLLMHandler(ABC):
                 # 通用对象，转换为字典
                 return {k: self._make_serializable(v) for k, v in obj.__dict__.items()}
         elif isinstance(obj, list):
-            return [self._make_serializable(item) for item in obj]
+            # 处理列表
+            serialized_list = [self._make_serializable(item) for item in obj]
+            
+            # 如果列表中只有一个元素，并且是字符串，尝试解析JSON
+            if len(serialized_list) == 1 and isinstance(serialized_list[0], str):
+                try:
+                    json_obj = json.loads(serialized_list[0])
+                    return json_obj
+                except json.JSONDecodeError:
+                    # 解析失败，返回原列表
+                    pass
+            
+            return serialized_list
         elif isinstance(obj, dict):
             return {k: self._make_serializable(v) for k, v in obj.items()}
+        elif isinstance(obj, str):
+            # 尝试解析可能的JSON字符串
+            try:
+                if obj.strip().startswith('{') or obj.strip().startswith('['):
+                    return json.loads(obj)
+                return obj
+            except json.JSONDecodeError:
+                return obj
         else:
             # 基本类型或已经可序列化的对象
             return obj 

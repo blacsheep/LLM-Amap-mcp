@@ -24,14 +24,27 @@ class ClaudeHandler(BaseLLMHandler):
         # 设置代理环境变量（如果启用）
         self._setup_proxies()
         
+        # 确定是否启用token高效工具调用
+        enable_token_efficient = (
+            self.settings.claude_model in ["claude-3-7-sonnet-20250219", "claude-3-sonnet-20240229"] and
+            self.settings.enable_token_efficient_tools
+        )
+        
         # 初始化Claude客户端
+        headers = {}
+        if enable_token_efficient:
+            headers["anthropic-beta"] = "token-efficient-tools-2025-02-19"
+            self.logger.info("已启用Claude token高效工具调用")
+        
         self.anthropic = AsyncAnthropic(
             api_key=self.settings.anthropic_api_key,
             # 添加额外的配置参数
             timeout=60.0,  # 设置超时时间
             max_retries=2,   # 设置最大重试次数
             # 添加代理配置（如果启用）
-            http_client=self._get_http_client() if self.settings.proxy_enabled else None
+            http_client=self._get_http_client() if self.settings.proxy_enabled else None,
+            # 添加beta头（如果启用token高效工具调用）
+            default_headers=headers if headers else None
         )
     
     def _setup_proxies(self):
@@ -193,98 +206,128 @@ class ClaudeHandler(BaseLLMHandler):
         }
         
         try:
-            # 处理响应内容
+            current_response = response
+            current_messages = messages.copy()
             response_parts = []
-            assistant_content = []
             
-            for content in response.content:
-                if content.type == 'text':
-                    response_parts.append(content.text)
-                    assistant_content.append(content)
-                elif content.type == 'tool_use':
-                    # 执行工具调用
-                    tool_result = await self._execute_tool_call(
-                        content.name, 
-                        content.input, 
-                        request_id
+            # 循环处理直到没有更多工具调用
+            max_iterations = self.settings.tool_max_iterations  # 使用配置的最大迭代次数
+            iteration = 0
+            
+            while iteration < max_iterations:
+                iteration += 1
+                self.logger.info(
+                    "开始处理第%d轮工具调用响应", 
+                    iteration,
+                    request_id=request_id
+                )
+                
+                has_tool_use = False
+                assistant_content = []
+                
+                # 处理当前响应内容
+                for content in current_response.content:
+                    if content.type == 'text':
+                        response_parts.append(content.text)
+                        assistant_content.append(content)
+                    elif content.type == 'tool_use':
+                        has_tool_use = True
+                        assistant_content.append(content)
+                        
+                        # 执行工具调用
+                        tool_result = await self._execute_tool_call(
+                            content.name, content.input, request_id
+                        )
+                        tool_result = self._prepare_tool_result_for_claude(tool_result)
+                        result["tool_calls"].append(tool_result)
+                        
+                        # 添加assistant消息（带有工具调用）到消息历史
+                        current_messages.append({
+                            "role": "assistant",
+                            "content": assistant_content
+                        })
+                        
+                        # 准备工具结果内容
+                        tool_result_content = tool_result["result"]
+                        if tool_result_content is not None and not isinstance(tool_result_content, str):
+                            try:
+                                tool_result_content = json.dumps(tool_result_content, ensure_ascii=False)
+                            except Exception as e:
+                                self.logger.warning(
+                                    "无法将工具结果转换为JSON字符串",
+                                    request_id=request_id,
+                                    error=str(e)
+                                )
+                                # 如果无法转换为JSON，则强制转换为字符串
+                                tool_result_content = str(tool_result_content)
+                        
+                        # 添加用户消息（带有工具结果）到消息历史
+                        current_messages.append({
+                            "role": "user",
+                            "content": [
+                                {
+                                    "type": "tool_result",
+                                    "tool_use_id": content.id,
+                                    "content": tool_result_content
+                                }
+                            ]
+                        })
+                
+                # 如果没有工具调用，则结束循环
+                if not has_tool_use:
+                    self.logger.info(
+                        "没有更多工具调用，处理完成",
+                        request_id=request_id,
+                        iteration=iteration
+                    )
+                    break
+                
+                # 如果有工具调用，则继续下一轮
+                try:
+                    self.logger.info(
+                        "发现工具调用，继续下一轮",
+                        request_id=request_id,
+                        iteration=iteration,
+                        tools_count=len(result["tool_calls"])
                     )
                     
-                    # 确保工具调用结果是符合Claude API要求的格式
-                    tool_result = self._prepare_tool_result_for_claude(tool_result)
-                    
-                    result["tool_calls"].append(tool_result)
-                    
-                    assistant_content.append(content)
-                    
-                    # 添加工具调用到消息历史
-                    messages.append({
-                        "role": "assistant",
-                        "content": assistant_content
-                    })
-                    
-                    # 确保结果是字符串
-                    tool_result_content = tool_result["result"]
-                    if tool_result_content is not None and not isinstance(tool_result_content, str):
-                        try:
-                            tool_result_content = json.dumps(tool_result_content, ensure_ascii=False)
-                        except Exception as e:
-                            self.logger.warning(
-                                "无法将工具结果转换为JSON字符串",
-                                request_id=request_id,
-                                error=str(e)
-                            )
-                            # 如果无法转换为JSON，则强制转换为字符串
-                            tool_result_content = str(tool_result_content)
-                    
-                    messages.append({
-                        "role": "user",
-                        "content": [
-                            {
-                                "type": "tool_result",
-                                "tool_use_id": content.id,
-                                "content": tool_result_content
-                            }
-                        ]
-                    })
-                    
-                    # 处理工具结果后再次调用API
-                    try:
-                        additional_response = await self.anthropic.messages.create(
-                            model=self.settings.claude_model,
-                            max_tokens=self.settings.claude_max_tokens,
-                            messages=messages,
-                            tools=tools if tools else None,
-                            system=self._build_system_prompt(),
-                            temperature=0.7,
-                        )
-                        
-                        # 处理附加响应
-                        for add_content in additional_response.content:
-                            if add_content.type == 'text':
-                                response_parts.append(add_content.text)
-                            elif add_content.type == 'tool_use':
-                                # 再次处理工具调用（递归方式）
-                                # 这里简化处理，实际场景可能需要完整递归
-                                tool_result = await self._execute_tool_call(
-                                    add_content.name, 
-                                    add_content.input, 
-                                    request_id
-                                )
-                                # 确保工具调用结果是符合Claude API要求的格式
-                                tool_result = self._prepare_tool_result_for_claude(tool_result)
-                                result["tool_calls"].append(tool_result)
-                        
-                    except Exception as additional_error:
-                        self.logger.error(
-                            "工具结果后的API调用失败", 
-                            request_id=request_id,
-                            error=str(additional_error)
-                        )
-                        response_parts.append(f"无法完成后续回答: {additional_error}")
+                    current_response = await self.anthropic.messages.create(
+                        model=self.settings.claude_model,
+                        max_tokens=self.settings.claude_max_tokens,
+                        messages=current_messages,
+                        tools=tools if tools else None,
+                        system=self._build_system_prompt(),
+                        temperature=0.7,
+                    )
+                except Exception as additional_error:
+                    self.logger.error(
+                        "工具结果后的API调用失败", 
+                        request_id=request_id,
+                        iteration=iteration,
+                        error=str(additional_error)
+                    )
+                    response_parts.append(f"无法完成后续回答: {additional_error}")
+                    break
+            
+            # 如果达到最大迭代次数仍未完成
+            if iteration >= max_iterations:
+                self.logger.warning(
+                    "工具调用达到最大迭代次数",
+                    request_id=request_id,
+                    max_iterations=max_iterations
+                )
+                response_parts.append("工具调用次数过多，未能完成所有处理。")
             
             # 合并所有响应文本
             result["response"] = "\n".join(response_parts)
             result["final_answer"] = result["response"]
+            
+            self.logger.info(
+                "Claude响应处理完成",
+                request_id=request_id,
+                iterations=iteration,
+                tools_count=len(result["tool_calls"])
+            )
             
             return result
             

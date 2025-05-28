@@ -227,82 +227,141 @@ class OpenAIHandler(BaseLLMHandler):
         }
         
         try:
-            choice = response.choices[0]
-            message = choice.message
+            current_response = response
+            current_messages = messages.copy()
+            response_parts = []
             
-            # 处理文本响应
-            if message.content:
-                result["response"] = message.content
-                result["final_answer"] = message.content
+            # 循环处理直到没有更多工具调用
+            max_iterations = self.settings.tool_max_iterations  # 使用配置的最大迭代次数
+            iteration = 0
             
-            # 处理工具调用
-            if message.tool_calls:
-                # 添加助手消息到历史
-                messages.append({
-                    "role": "assistant",
-                    "content": message.content,
-                    "tool_calls": [
-                        {
-                            "id": tc.id,
-                            "type": tc.type,
-                            "function": {
-                                "name": tc.function.name,
-                                "arguments": tc.function.arguments
-                            }
-                        }
-                        for tc in message.tool_calls
-                    ]
-                })
-                
-                # 执行工具调用
-                for tool_call in message.tool_calls:
-                    try:
-                        # 解析工具参数
-                        arguments = json.loads(tool_call.function.arguments)
-                        
-                        # 执行工具调用
-                        tool_result = await self._execute_tool_call(
-                            tool_call.function.name,
-                            arguments,
-                            request_id
-                        )
-                        result["tool_calls"].append(tool_result)
-                        
-                        # 添加工具结果到消息历史
-                        messages.append({
-                            "role": "tool",
-                            "tool_call_id": tool_call.id,
-                            "content": json.dumps(tool_result["result"], ensure_ascii=False)
-                        })
-                        
-                    except json.JSONDecodeError as e:
-                        self.logger.error("工具参数解析失败", 
-                                        request_id=request_id,
-                                        tool_name=tool_call.function.name,
-                                        arguments=tool_call.function.arguments,
-                                        error=str(e))
-                        # 添加错误结果
-                        messages.append({
-                            "role": "tool",
-                            "tool_call_id": tool_call.id,
-                            "content": f"参数解析失败: {e}"
-                        })
-                
-                # 获取工具调用后的响应
-                follow_up_response = await self.openai.chat.completions.create(
-                    model=self.settings.openai_model,
-                    max_tokens=self.settings.openai_max_tokens,
-                    messages=messages,
-                    temperature=self.settings.openai_temperature,
-                    tools=tools if tools else None,
-                    tool_choice="auto" if tools else None
+            while iteration < max_iterations:
+                iteration += 1
+                self.logger.info(
+                    "开始处理第%d轮工具调用响应", 
+                    iteration,
+                    request_id=request_id
                 )
                 
-                # 处理后续响应
-                follow_choice = follow_up_response.choices[0]
-                if follow_choice.message.content:
-                    result["response"] = follow_choice.message.content
-                    result["final_answer"] = follow_choice.message.content
+                choice = current_response.choices[0]
+                message = choice.message
+                
+                # 处理文本响应
+                if message.content:
+                    response_parts.append(message.content)
+                
+                # 检查是否有工具调用
+                has_tool_calls = False
+                if message.tool_calls:
+                    has_tool_calls = True
+                    
+                    # 添加助手消息到历史
+                    current_messages.append({
+                        "role": "assistant",
+                        "content": message.content,
+                        "tool_calls": [
+                            {
+                                "id": tc.id,
+                                "type": tc.type,
+                                "function": {
+                                    "name": tc.function.name,
+                                    "arguments": tc.function.arguments
+                                }
+                            }
+                            for tc in message.tool_calls
+                        ]
+                    })
+                    
+                    # 执行工具调用
+                    for tool_call in message.tool_calls:
+                        try:
+                            # 解析工具参数
+                            arguments = json.loads(tool_call.function.arguments)
+                            
+                            # 执行工具调用
+                            tool_result = await self._execute_tool_call(
+                                tool_call.function.name,
+                                arguments,
+                                request_id
+                            )
+                            result["tool_calls"].append(tool_result)
+                            
+                            # 添加工具结果到消息历史
+                            current_messages.append({
+                                "role": "tool",
+                                "tool_call_id": tool_call.id,
+                                "content": json.dumps(tool_result["result"], ensure_ascii=False)
+                            })
+                            
+                        except json.JSONDecodeError as e:
+                            self.logger.error("工具参数解析失败", 
+                                            request_id=request_id,
+                                            tool_name=tool_call.function.name,
+                                            arguments=tool_call.function.arguments,
+                                            error=str(e))
+                            # 添加错误结果
+                            current_messages.append({
+                                "role": "tool",
+                                "tool_call_id": tool_call.id,
+                                "content": f"参数解析失败: {e}"
+                            })
+                
+                # 如果没有工具调用，则结束循环
+                if not has_tool_calls:
+                    self.logger.info(
+                        "没有更多工具调用，处理完成",
+                        request_id=request_id,
+                        iteration=iteration
+                    )
+                    break
+                    
+                # 如果有工具调用，则继续下一轮
+                try:
+                    self.logger.info(
+                        "发现工具调用，继续下一轮",
+                        request_id=request_id,
+                        iteration=iteration,
+                        tools_count=len(result["tool_calls"])
+                    )
+                    
+                    # 获取工具调用后的响应
+                    current_response = await self.openai.chat.completions.create(
+                        model=self.settings.openai_model,
+                        max_tokens=self.settings.openai_max_tokens,
+                        messages=current_messages,
+                        temperature=self.settings.openai_temperature,
+                        tools=tools if tools else None,
+                        tool_choice="auto" if tools else None
+                    )
+                except Exception as additional_error:
+                    self.logger.error(
+                        "工具结果后的API调用失败", 
+                        request_id=request_id,
+                        iteration=iteration,
+                        error=str(additional_error)
+                    )
+                    response_parts.append(f"无法完成后续回答: {additional_error}")
+                    break
+            
+            # 如果达到最大迭代次数仍未完成
+            if iteration >= max_iterations:
+                self.logger.warning(
+                    "工具调用达到最大迭代次数",
+                    request_id=request_id,
+                    max_iterations=max_iterations
+                )
+                response_parts.append("工具调用次数过多，未能完成所有处理。")
+            
+            # 合并所有响应文本
+            result["response"] = "\n".join(response_parts)
+            result["final_answer"] = result["response"]
+            
+            self.logger.info(
+                "OpenAI响应处理完成",
+                request_id=request_id,
+                iterations=iteration,
+                tools_count=len(result["tool_calls"])
+            )
             
             return result
             

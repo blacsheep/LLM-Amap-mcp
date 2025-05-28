@@ -26,6 +26,10 @@ class Settings(BaseSettings):
     anthropic_api_key: str = Field(..., env="ANTHROPIC_API_KEY")
     claude_model: str = Field(default="claude-3-7-sonnet-20250219", env="CLAUDE_MODEL")
     claude_max_tokens: int = Field(default=1000, env="CLAUDE_MAX_TOKENS")
+    enable_token_efficient_tools: bool = Field(default=False, env="ENABLE_TOKEN_EFFICIENT_TOOLS")
+    
+    # 工具调用配置
+    tool_max_iterations: int = Field(default=10, env="TOOL_MAX_ITERATIONS") 
     
     # OpenAI兼容API配置
     openai_api_key: Optional[str] = Field(default=None, env="OPENAI_API_KEY")

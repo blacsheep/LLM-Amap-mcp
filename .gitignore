@@ -344,3 +344,7 @@ docs/_build/
 # Local configuration overrides
 local_settings.py
 local_config.py
+
+# data and logs
+scripts/process_data/logs
+scripts/process_data/data

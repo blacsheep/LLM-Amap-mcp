@@ -7,6 +7,8 @@
 - **智能地址解析**: 使用Claude AI理解自然语言地址查询
 - **高德地图集成**: 通过MCP协议集成高德地图API
 - **多种查询方式**: 支持地址转坐标、坐标转地址、POI搜索等
+- **多轮工具调用**: 支持复杂的多轮次工具调用，完成连续任务
+- **多种LLM支持**: 支持Claude和OpenAI等大模型
 - **RESTful API**: 提供完整的HTTP API接口
 - **异步处理**: 高性能异步架构，支持并发请求
 - **健康监控**: 完善的健康检查和监控机制
@@ -244,6 +246,15 @@ python scripts/start_amap_server.py monitor
 
 | 参数 | 默认值 | 说明 |
 |------|--------|------|
+| `LLM_PROVIDER` | claude | 大语言模型提供商（claude或openai） |
+| `ANTHROPIC_API_KEY` | 必填 | Claude API密钥 |
+| `CLAUDE_MODEL` | claude-3-7-sonnet-20250219 | Claude模型版本 |
+| `CLAUDE_MAX_TOKENS` | 1000 | Claude最大输出token数量 |
+| `ENABLE_TOKEN_EFFICIENT_TOOLS` | false | 是否启用Claude token高效工具调用 |
+| `TOOL_MAX_ITERATIONS` | 10 | 工具调用最大迭代次数 |
+| `OPENAI_API_KEY` | 可选 | OpenAI API密钥 |
+| `OPENAI_MODEL` | gpt-4 | OpenAI模型版本 |
+| `OPENAI_MAX_TOKENS` | 1000 | OpenAI最大输出token数量 |
 | `MCP_SERVER_TIMEOUT` | 30 | MCP服务器超时时间（秒） |
 | `MCP_RETRY_COUNT` | 3 | 重试次数 |
 | `MCP_RETRY_DELAY` | 1.0 | 重试延迟（秒） |
@@ -264,6 +275,12 @@ pytest tests/test_mcp_client.py -v
 
 # 运行集成测试（需要API密钥）
 pytest tests/ -m integration
+
+# 运行多轮工具调用测试
+python tests/run_tests.py --claude    # 仅运行Claude测试
+python tests/run_tests.py --openai    # 仅运行OpenAI测试
+python tests/run_tests.py --complex   # 仅运行复杂多轮测试
+python tests/run_tests.py --all       # 运行所有测试
 ```
 
 ### 测试覆盖率
@@ -280,7 +297,8 @@ address-parser-service/
 ├── src/                    # 核心源代码
 │   ├── mcp_client/        # MCP客户端模块
 │   │   ├── amap_client.py # 高德MCP客户端
-│   │   └── claude_handler.py # Claude处理器
+│   │   ├── claude_handler.py # Claude处理器
+│   │   └── openai_handler.py # OpenAI处理器
 │   ├── core/              # 核心模块
 │   │   ├── config.py      # 配置管理
 │   │   ├── logger.py      # 日志配置
@@ -292,6 +310,10 @@ address-parser-service/
 │   ├── routes/           # API路由
 │   └── schemas/          # 数据模型
 ├── tests/                # 测试代码
+│   ├── test_mcp_client.py # MCP客户端测试
+│   ├── test_multi_tool_calls.py # 多轮工具调用测试
+│   ├── test_complex_multi_tool_calls.py # 复杂多轮工具调用测试
+│   └── test_openai_multi_tool_calls.py # OpenAI多轮工具调用测试
 ├── scripts/              # 脚本文件
 ├── examples/             # 使用示例
 ├── logs/                 # 日志文件
@@ -315,6 +337,23 @@ result = await claude_handler.process_query(query)
 
 # POI搜索
 query = "帮我查找北京大学的地理坐标"
+result = await claude_handler.process_query(query)
+```
+
+### 多轮工具调用示例
+
+```python
+# 多轮次工具调用示例 - 天气比较
+query = "查询一下北京市和上海市今天的天气，并告诉我在这两个城市中，哪个城市更适合户外活动？"
+result = await claude_handler.process_query(query)
+
+# 复杂多轮工具调用 - 旅行规划
+query = """请帮我规划一次从北京到上海的旅行路线：
+1. 首先查询北京和上海的天气情况
+2. 然后查询北京市区到上海市区的驾车路线
+3. 再查询途经城市杭州市的著名景点
+4. 最后给我一个综合考虑天气和路线的详细旅行计划建议
+"""
 result = await claude_handler.process_query(query)
 ```
 
